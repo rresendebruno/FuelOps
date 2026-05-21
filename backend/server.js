@@ -237,7 +237,6 @@ async function seedDB() {
     ('Marcos Lima', '5562999010005','MNO-7890')
   `);
 
-  // Cargas de exemplo
   const uid = (await db.query("SELECT id FROM users WHERE username='admin'")).rows[0].id;
   await db.query(`
     INSERT INTO cargas (combustivel,posto,distribuidora,motorista,quantidade,valor_litro,valor_total,forma_pagamento,status,status_financeiro,data_prevista,vencimento,created_by) VALUES
@@ -250,7 +249,6 @@ async function seedDB() {
     ('Diesel S10',        'Posto Gama', 'Raízen',         'Lucas Alves',35000,6.42,224700,'Boleto',        'Finalizado',          'pago',   '2026-05-08','2026-05-09',$1)
   `, [uid]);
 
-  // WPP log de exemplo
   await db.query(`
     INSERT INTO whatsapp_log (carga_id,tipo,destino,mensagem,status,sent_at) VALUES
     (6,'grupo_posto','Posto Alpha - WhatsApp',
@@ -291,7 +289,6 @@ async function sendWhatsApp(cargaId, tipo, destino, mensagem) {
     [cargaId, tipo, destino, mensagem, 'pendente']
   );
 
-  // Envio assíncrono com retry
   (async () => {
     const maxTries = 3;
     for (let t = 1; t <= maxTries; t++) {
@@ -301,7 +298,6 @@ async function sendWhatsApp(cargaId, tipo, destino, mensagem) {
         const instance = process.env.EVOLUTION_API_INSTANCE;
 
         if (!url || !token || !instance || url.includes('sua-evolution')) {
-          // Modo demo: apenas loga sem enviar
           console.log(`[WhatsApp DEMO] Para: ${destino}\n${mensagem}`);
           await db.query('UPDATE whatsapp_log SET status=$1,sent_at=NOW(),tentativas=$2 WHERE id=$3', ['enviado', t, log.id]);
           return;
@@ -330,7 +326,6 @@ async function sendWhatsApp(cargaId, tipo, destino, mensagem) {
 
 // ─── ROUTES ───────────────────────────────────────────────────────────────────
 
-// Health
 app.get('/health', (_, res) => res.json({ status: 'ok', ts: new Date().toISOString() }));
 
 // ── AUTH ──
@@ -341,14 +336,13 @@ app.post('/auth/login', async (req, res) => {
     const user = rows[0];
     if (!user || !(await bcrypt.compare(password, user.password)))
       return res.status(401).json({ error: 'Credenciais inválidas' });
-
     const token = jwt.sign({ id: user.id, username: user.username, role: user.role, name: user.name }, JWT_SECRET, { expiresIn: '8h' });
     audit(user.id, 'LOGIN', 'users', user.id, req.ip);
     res.json({ token, user: { id: user.id, name: user.name, username: user.username, role: user.role } });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── USERS (admin) ──
+// ── USERS ──
 app.get('/users', authMiddleware, requireRole('admin'), async (req, res) => {
   const { rows } = await db.query('SELECT id,name,username,email,role,active,created_at FROM users ORDER BY name');
   res.json(rows);
@@ -368,91 +362,124 @@ app.post('/users', authMiddleware, requireRole('admin'), async (req, res) => {
 });
 
 app.patch('/users/:id', authMiddleware, requireRole('admin'), async (req, res) => {
-  const { name, role, active } = req.body;
-  await db.query('UPDATE users SET name=COALESCE($1,name),role=COALESCE($2,role),active=COALESCE($3,active) WHERE id=$4', [name, role, active, req.params.id]);
-  audit(req.user.id, 'UPDATE_USER', 'users', req.params.id, req.ip);
-  res.json({ ok: true });
+  try {
+    const { name, role, active } = req.body;
+    await db.query('UPDATE users SET name=COALESCE($1,name),role=COALESCE($2,role),active=COALESCE($3,active) WHERE id=$4', [name, role, active, req.params.id]);
+    audit(req.user.id, 'UPDATE_USER', 'users', req.params.id, req.ip);
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 // ── POSTOS ──
 app.get('/postos', authMiddleware, async (req, res) => {
-  const { rows } = await db.query('SELECT * FROM postos WHERE active=true ORDER BY nome_fantasia');
-  res.json(rows);
+  try {
+    const { rows } = await db.query('SELECT * FROM postos WHERE active=true ORDER BY nome_fantasia');
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/postos', authMiddleware, requireRole('admin'), async (req, res) => {
-  const { nome_fantasia, razao_social, cnpj, cidade, estado, telefone, responsavel, whatsapp_group_id, limite_operacional } = req.body;
-  const { rows } = await db.query(
-    'INSERT INTO postos (nome_fantasia,razao_social,cnpj,cidade,estado,telefone,responsavel,whatsapp_group_id,limite_operacional) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *',
-    [nome_fantasia, razao_social, cnpj, cidade, estado, telefone, responsavel, whatsapp_group_id, limite_operacional]
-  );
-  audit(req.user.id, 'CREATE_POSTO', 'postos', rows[0].id, req.ip);
-  res.status(201).json(rows[0]);
+  try {
+    const { nome_fantasia, razao_social, cnpj, cidade, estado, telefone, responsavel, whatsapp_group_id, limite_operacional } = req.body;
+    if (!nome_fantasia) return res.status(400).json({ error: 'Nome é obrigatório' });
+    const { rows } = await db.query(
+      'INSERT INTO postos (nome_fantasia,razao_social,cnpj,cidade,estado,telefone,responsavel,whatsapp_group_id,limite_operacional) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *',
+      [nome_fantasia, razao_social||'', cnpj||'', cidade||'', estado||'', telefone||'', responsavel||'', whatsapp_group_id||'', parseFloat(limite_operacional)||0]
+    );
+    audit(req.user.id, 'CREATE_POSTO', 'postos', rows[0].id, req.ip);
+    res.status(201).json(rows[0]);
+  } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 app.patch('/postos/:id', authMiddleware, requireRole('admin'), async (req, res) => {
-  const fields = req.body;
-  const sets = Object.keys(fields).map((k, i) => `${k}=$${i + 2}`).join(',');
-  await db.query(`UPDATE postos SET ${sets} WHERE id=$1`, [req.params.id, ...Object.values(fields)]);
-  res.json({ ok: true });
+  try {
+    const allowed = ['nome_fantasia','razao_social','cnpj','cidade','estado','telefone','responsavel','whatsapp_group_id','limite_operacional','active'];
+    const body = Object.fromEntries(Object.entries(req.body).filter(([k]) => allowed.includes(k)));
+    if (!Object.keys(body).length) return res.json({ ok: true });
+    const sets = Object.keys(body).map((k, i) => `${k}=$${i + 2}`).join(',');
+    await db.query(`UPDATE postos SET ${sets} WHERE id=$1`, [req.params.id, ...Object.values(body)]);
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 // ── DISTRIBUIDORAS ──
 app.get('/distribuidoras', authMiddleware, async (req, res) => {
-  const { rows } = await db.query('SELECT * FROM distribuidoras WHERE active=true ORDER BY nome');
-  res.json(rows);
+  try {
+    const { rows } = await db.query('SELECT * FROM distribuidoras WHERE active=true ORDER BY nome');
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/distribuidoras', authMiddleware, requireRole('admin'), async (req, res) => {
-  const { nome, cnpj, telefone, email, chave_pix, banco, agencia, conta, saldo_antecipado } = req.body;
-  const { rows } = await db.query(
-    'INSERT INTO distribuidoras (nome,cnpj,telefone,email,chave_pix,banco,agencia,conta,saldo_antecipado) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *',
-    [nome, cnpj, telefone, email, chave_pix, banco, agencia, conta, saldo_antecipado || 0]
-  );
-  res.status(201).json(rows[0]);
+  try {
+    const { nome, cnpj, telefone, email, chave_pix, banco, agencia, conta, saldo_antecipado } = req.body;
+    if (!nome) return res.status(400).json({ error: 'Nome é obrigatório' });
+    const saldo = parseFloat(saldo_antecipado) || 0;
+    const { rows } = await db.query(
+      'INSERT INTO distribuidoras (nome,cnpj,telefone,email,chave_pix,banco,agencia,conta,saldo_antecipado) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *',
+      [nome, cnpj||'', telefone||'', email||'', chave_pix||'', banco||'', agencia||'', conta||'', saldo]
+    );
+    res.status(201).json(rows[0]);
+  } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 app.patch('/distribuidoras/:id', authMiddleware, requireRole('admin'), async (req, res) => {
-  const { nome, saldo_antecipado, active } = req.body;
-  await db.query('UPDATE distribuidoras SET nome=COALESCE($1,nome),saldo_antecipado=COALESCE($2,saldo_antecipado),active=COALESCE($3,active) WHERE id=$4',
-    [nome, saldo_antecipado, active, req.params.id]);
-  res.json({ ok: true });
+  try {
+    const { nome, saldo_antecipado, active } = req.body;
+    const sets = [];
+    const vals = [req.params.id];
+    if (nome             !== undefined) { vals.push(nome);                              sets.push(`nome=$${vals.length}`); }
+    if (saldo_antecipado !== undefined) { vals.push(parseFloat(saldo_antecipado) || 0); sets.push(`saldo_antecipado=$${vals.length}`); }
+    if (active           !== undefined) { vals.push(active);                            sets.push(`active=$${vals.length}`); }
+    if (!sets.length) return res.json({ ok: true });
+    await db.query(`UPDATE distribuidoras SET ${sets.join(',')} WHERE id=$1`, vals);
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 // ── MOTORISTAS ──
 app.get('/motoristas', authMiddleware, async (req, res) => {
-  const { rows } = await db.query('SELECT * FROM motoristas WHERE active=true ORDER BY nome');
-  res.json(rows);
+  try {
+    const { rows } = await db.query('SELECT * FROM motoristas WHERE active=true ORDER BY nome');
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/motoristas', authMiddleware, requireRole('admin'), async (req, res) => {
-  const { nome, cpf, telefone, whatsapp_number, placa_caminhao, transportadora } = req.body;
-  const { rows } = await db.query(
-    'INSERT INTO motoristas (nome,cpf,telefone,whatsapp_number,placa_caminhao,transportadora) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *',
-    [nome, cpf, telefone, whatsapp_number, placa_caminhao, transportadora]
-  );
-  res.status(201).json(rows[0]);
+  try {
+    const { nome, cpf, telefone, whatsapp_number, placa_caminhao, transportadora } = req.body;
+    if (!nome) return res.status(400).json({ error: 'Nome é obrigatório' });
+    const { rows } = await db.query(
+      'INSERT INTO motoristas (nome,cpf,telefone,whatsapp_number,placa_caminhao,transportadora) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *',
+      [nome, cpf||'', telefone||'', whatsapp_number||'', placa_caminhao||'', transportadora||'']
+    );
+    res.status(201).json(rows[0]);
+  } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 // ── COMBUSTÍVEIS ──
 app.get('/combustiveis', authMiddleware, async (req, res) => {
-  const { rows } = await db.query('SELECT * FROM combustiveis WHERE active=true ORDER BY nome');
-  res.json(rows);
+  try {
+    const { rows } = await db.query('SELECT * FROM combustiveis WHERE active=true ORDER BY nome');
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── CARGAS ──
 app.get('/cargas', authMiddleware, async (req, res) => {
-  const { status, posto, distribuidora, de, ate } = req.query;
-  let q = 'SELECT * FROM cargas WHERE deleted_at IS NULL';
-  const vals = [];
-  if (status)       { vals.push(status);       q += ` AND status=$${vals.length}`; }
-  if (posto)        { vals.push(posto);         q += ` AND posto=$${vals.length}`; }
-  if (distribuidora){ vals.push(distribuidora); q += ` AND distribuidora=$${vals.length}`; }
-  if (de)           { vals.push(de);            q += ` AND data_prevista>=$${vals.length}`; }
-  if (ate)          { vals.push(ate);           q += ` AND data_prevista<=$${vals.length}`; }
-  q += ' ORDER BY created_at DESC';
-  const { rows } = await db.query(q, vals);
-  res.json(rows);
+  try {
+    const { status, posto, distribuidora, de, ate } = req.query;
+    let q = 'SELECT * FROM cargas WHERE deleted_at IS NULL';
+    const vals = [];
+    if (status)        { vals.push(status);        q += ` AND status=$${vals.length}`; }
+    if (posto)         { vals.push(posto);          q += ` AND posto=$${vals.length}`; }
+    if (distribuidora) { vals.push(distribuidora);  q += ` AND distribuidora=$${vals.length}`; }
+    if (de)            { vals.push(de);             q += ` AND data_prevista>=$${vals.length}`; }
+    if (ate)           { vals.push(ate);            q += ` AND data_prevista<=$${vals.length}`; }
+    q += ' ORDER BY created_at DESC';
+    const { rows } = await db.query(q, vals);
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/cargas', authMiddleware, requireRole('admin', 'gerente'), async (req, res) => {
@@ -462,7 +489,7 @@ app.post('/cargas', authMiddleware, requireRole('admin', 'gerente'), async (req,
     const { rows } = await db.query(
       `INSERT INTO cargas (combustivel,posto,distribuidora,motorista,quantidade,valor_litro,valor_total,forma_pagamento,data_prevista,vencimento,observacoes,created_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
-      [combustivel, posto, distribuidora, motorista, quantidade, valor_litro || 0, valor_total, forma_pagamento, data_prevista, vencimento, observacoes, req.user.id]
+      [combustivel, posto, distribuidora||null, motorista||null, quantidade, parseFloat(valor_litro)||0, valor_total, forma_pagamento||null, data_prevista||null, vencimento||null, observacoes||null, req.user.id]
     );
     audit(req.user.id, 'CREATE_CARGA', 'cargas', rows[0].id, req.ip);
     res.status(201).json(rows[0]);
@@ -470,18 +497,27 @@ app.post('/cargas', authMiddleware, requireRole('admin', 'gerente'), async (req,
 });
 
 app.get('/cargas/:id', authMiddleware, async (req, res) => {
-  const { rows } = await db.query('SELECT * FROM cargas WHERE id=$1 AND deleted_at IS NULL', [req.params.id]);
-  if (!rows[0]) return res.status(404).json({ error: 'Não encontrada' });
-  res.json(rows[0]);
+  try {
+    const { rows } = await db.query('SELECT * FROM cargas WHERE id=$1 AND deleted_at IS NULL', [req.params.id]);
+    if (!rows[0]) return res.status(404).json({ error: 'Não encontrada' });
+    res.json(rows[0]);
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.patch('/cargas/:id', authMiddleware, async (req, res) => {
   try {
     const allowed = ['combustivel','posto','distribuidora','motorista','quantidade','valor_litro','valor_total','forma_pagamento','data_prevista','vencimento','observacoes','status_financeiro'];
     const body = Object.fromEntries(Object.entries(req.body).filter(([k]) => allowed.includes(k)));
+    if (!Object.keys(body).length) return res.json({ ok: true });
 
-    if (body.quantidade && body.valor_litro)
-      body.valor_total = parseFloat(body.quantidade) * parseFloat(body.valor_litro);
+    // Recalcula valor_total se ambos os campos vieram
+    if (body.quantidade !== undefined && body.valor_litro !== undefined)
+      body.valor_total = (parseFloat(body.quantidade) || 0) * (parseFloat(body.valor_litro) || 0);
+
+    // Sanitiza numéricos para não mandar NaN ao Postgres
+    if (body.quantidade   !== undefined) body.quantidade   = parseFloat(body.quantidade)   || 0;
+    if (body.valor_litro  !== undefined) body.valor_litro  = parseFloat(body.valor_litro)  || 0;
+    if (body.valor_total  !== undefined) body.valor_total  = parseFloat(body.valor_total)  || 0;
 
     body.updated_at = new Date();
     const sets = Object.keys(body).map((k, i) => `${k}=$${i + 2}`).join(',');
@@ -505,16 +541,13 @@ app.patch('/cargas/:id/status', authMiddleware, async (req, res) => {
     await db.query('INSERT INTO carga_historico (carga_id,status_de,status_para,changed_by) VALUES ($1,$2,$3,$4)',
       [req.params.id, carga.status, status, req.user.id]);
 
-    // WhatsApp automático ao programar carga
     if (status === 'Carga Programada') {
       const { rows: [posto] } = await db.query('SELECT * FROM postos WHERE nome_fantasia=$1', [carga.posto]);
       const grupoId = posto?.whatsapp_group_id || carga.posto;
       const data = carga.data_prevista ? new Date(carga.data_prevista).toLocaleDateString('pt-BR') : '—';
-
       const msgGrupo = `🚛 *Nova carga programada*\n\nPosto: ${carga.posto.toUpperCase()}\nCombustível: ${carga.combustivel}\nQuantidade: ${Number(carga.quantidade).toLocaleString('pt-BR')} litros\nMotorista: ${carga.motorista}\nDistribuidora: ${carga.distribuidora}\nPrevisão: ${data} 08:00`;
       sendWhatsApp(req.params.id, 'grupo_posto', grupoId, msgGrupo);
 
-      // WhatsApp para motorista
       const { rows: [mot] } = await db.query('SELECT * FROM motoristas WHERE nome=$1', [carga.motorista]);
       if (mot?.whatsapp_number) {
         const msgMot = `🚛 *Nova viagem atribuída*\n\nDestino: ${carga.posto}\nCombustível: ${carga.combustivel}\nQuantidade: ${Number(carga.quantidade).toLocaleString('pt-BR')} litros\nPrevisão: ${data} 08:00`;
@@ -528,96 +561,113 @@ app.patch('/cargas/:id/status', authMiddleware, async (req, res) => {
 });
 
 app.delete('/cargas/:id', authMiddleware, requireRole('admin'), async (req, res) => {
-  await db.query('UPDATE cargas SET deleted_at=NOW() WHERE id=$1', [req.params.id]);
-  audit(req.user.id, 'DELETE_CARGA', 'cargas', req.params.id, req.ip);
-  res.json({ ok: true });
+  try {
+    await db.query('UPDATE cargas SET deleted_at=NOW() WHERE id=$1', [req.params.id]);
+    audit(req.user.id, 'DELETE_CARGA', 'cargas', req.params.id, req.ip);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Histórico de status
 app.get('/cargas/:id/historico', authMiddleware, async (req, res) => {
-  const { rows } = await db.query(
-    'SELECT h.*,u.name as user_name FROM carga_historico h LEFT JOIN users u ON u.id=h.changed_by WHERE h.carga_id=$1 ORDER BY h.created_at DESC',
-    [req.params.id]
-  );
-  res.json(rows);
+  try {
+    const { rows } = await db.query(
+      'SELECT h.*,u.name as user_name FROM carga_historico h LEFT JOIN users u ON u.id=h.changed_by WHERE h.carga_id=$1 ORDER BY h.created_at DESC',
+      [req.params.id]
+    );
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── DASHBOARD ──
 app.get('/dashboard/geral', authMiddleware, requireRole('admin', 'gerente'), async (req, res) => {
-  const [vol, val, pend, pg, porComb, porPosto, porDist, porStatus] = await Promise.all([
-    db.query('SELECT SUM(quantidade) AS total FROM cargas WHERE deleted_at IS NULL'),
-    db.query('SELECT SUM(valor_total) AS total FROM cargas WHERE deleted_at IS NULL'),
-    db.query("SELECT SUM(valor_total) AS total FROM cargas WHERE status_financeiro='pendente' AND deleted_at IS NULL"),
-    db.query("SELECT SUM(valor_total) AS total FROM cargas WHERE status_financeiro='pago' AND deleted_at IS NULL"),
-    db.query('SELECT combustivel, SUM(quantidade) AS volume, SUM(valor_total) AS valor FROM cargas WHERE deleted_at IS NULL GROUP BY combustivel ORDER BY volume DESC'),
-    db.query('SELECT posto, SUM(quantidade) AS volume, SUM(valor_total) AS valor FROM cargas WHERE deleted_at IS NULL GROUP BY posto ORDER BY volume DESC'),
-    db.query('SELECT distribuidora, SUM(quantidade) AS volume, SUM(valor_total) AS valor FROM cargas WHERE deleted_at IS NULL GROUP BY distribuidora ORDER BY volume DESC'),
-    db.query('SELECT status, COUNT(*) AS count FROM cargas WHERE deleted_at IS NULL GROUP BY status'),
-  ]);
-  res.json({
-    volume_total:   parseFloat(vol.rows[0]?.total || 0),
-    valor_total:    parseFloat(val.rows[0]?.total || 0),
-    pendente:       parseFloat(pend.rows[0]?.total || 0),
-    pago:           parseFloat(pg.rows[0]?.total || 0),
-    por_combustivel: porComb.rows,
-    por_posto:       porPosto.rows,
-    por_distribuidora: porDist.rows,
-    por_status:      porStatus.rows,
-  });
+  try {
+    const [vol, val, pend, pg, porComb, porPosto, porDist, porStatus] = await Promise.all([
+      db.query('SELECT SUM(quantidade) AS total FROM cargas WHERE deleted_at IS NULL'),
+      db.query('SELECT SUM(valor_total) AS total FROM cargas WHERE deleted_at IS NULL'),
+      db.query("SELECT SUM(valor_total) AS total FROM cargas WHERE status_financeiro='pendente' AND deleted_at IS NULL"),
+      db.query("SELECT SUM(valor_total) AS total FROM cargas WHERE status_financeiro='pago' AND deleted_at IS NULL"),
+      db.query('SELECT combustivel, SUM(quantidade) AS volume, SUM(valor_total) AS valor FROM cargas WHERE deleted_at IS NULL GROUP BY combustivel ORDER BY volume DESC'),
+      db.query('SELECT posto, SUM(quantidade) AS volume, SUM(valor_total) AS valor FROM cargas WHERE deleted_at IS NULL GROUP BY posto ORDER BY volume DESC'),
+      db.query('SELECT distribuidora, SUM(quantidade) AS volume, SUM(valor_total) AS valor FROM cargas WHERE deleted_at IS NULL GROUP BY distribuidora ORDER BY volume DESC'),
+      db.query('SELECT status, COUNT(*) AS count FROM cargas WHERE deleted_at IS NULL GROUP BY status'),
+    ]);
+    res.json({
+      volume_total:      parseFloat(vol.rows[0]?.total   || 0),
+      valor_total:       parseFloat(val.rows[0]?.total   || 0),
+      pendente:          parseFloat(pend.rows[0]?.total  || 0),
+      pago:              parseFloat(pg.rows[0]?.total    || 0),
+      por_combustivel:   porComb.rows,
+      por_posto:         porPosto.rows,
+      por_distribuidora: porDist.rows,
+      por_status:        porStatus.rows,
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── WHATSAPP LOG ──
 app.get('/whatsapp/log', authMiddleware, requireRole('admin'), async (req, res) => {
-  const { rows } = await db.query('SELECT * FROM whatsapp_log ORDER BY created_at DESC LIMIT 100');
-  res.json(rows);
+  try {
+    const { rows } = await db.query('SELECT * FROM whatsapp_log ORDER BY created_at DESC LIMIT 100');
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/whatsapp/reenviar/:id', authMiddleware, requireRole('admin'), async (req, res) => {
-  const { rows: [log] } = await db.query('SELECT * FROM whatsapp_log WHERE id=$1', [req.params.id]);
-  if (!log) return res.status(404).json({ error: 'Log não encontrado' });
-  await db.query('UPDATE whatsapp_log SET status=$1,tentativas=0,erro_msg=NULL WHERE id=$2', ['pendente', req.params.id]);
-  sendWhatsApp(log.carga_id, log.tipo, log.destino, log.mensagem);
-  res.json({ ok: true });
+  try {
+    const { rows: [log] } = await db.query('SELECT * FROM whatsapp_log WHERE id=$1', [req.params.id]);
+    if (!log) return res.status(404).json({ error: 'Log não encontrado' });
+    await db.query('UPDATE whatsapp_log SET status=$1,tentativas=0,erro_msg=NULL WHERE id=$2', ['pendente', req.params.id]);
+    sendWhatsApp(log.carga_id, log.tipo, log.destino, log.mensagem);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── AUDIT ──
 app.get('/audit', authMiddleware, requireRole('admin'), async (req, res) => {
-  const { rows } = await db.query(
-    'SELECT a.*,u.name FROM audit_log a LEFT JOIN users u ON u.id=a.user_id ORDER BY a.created_at DESC LIMIT 500'
-  );
-  res.json(rows);
+  try {
+    const { rows } = await db.query(
+      'SELECT a.*,u.name FROM audit_log a LEFT JOIN users u ON u.id=a.user_id ORDER BY a.created_at DESC LIMIT 500'
+    );
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ── RELATÓRIOS ──
 app.get('/relatorios/cargas', authMiddleware, requireRole('admin', 'gerente'), async (req, res) => {
-  const { de, ate, posto, distribuidora, combustivel } = req.query;
-  let q = 'SELECT * FROM cargas WHERE deleted_at IS NULL';
-  const vals = [];
-  if (de)          { vals.push(de);          q += ` AND data_prevista>=$${vals.length}`; }
-  if (ate)         { vals.push(ate);         q += ` AND data_prevista<=$${vals.length}`; }
-  if (posto)       { vals.push(posto);       q += ` AND posto=$${vals.length}`; }
-  if (distribuidora){ vals.push(distribuidora); q += ` AND distribuidora=$${vals.length}`; }
-  if (combustivel) { vals.push(combustivel); q += ` AND combustivel=$${vals.length}`; }
-  q += ' ORDER BY data_prevista DESC';
-  const { rows } = await db.query(q, vals);
-  res.json(rows);
+  try {
+    const { de, ate, posto, distribuidora, combustivel } = req.query;
+    let q = 'SELECT * FROM cargas WHERE deleted_at IS NULL';
+    const vals = [];
+    if (de)           { vals.push(de);           q += ` AND data_prevista>=$${vals.length}`; }
+    if (ate)          { vals.push(ate);           q += ` AND data_prevista<=$${vals.length}`; }
+    if (posto)        { vals.push(posto);         q += ` AND posto=$${vals.length}`; }
+    if (distribuidora){ vals.push(distribuidora); q += ` AND distribuidora=$${vals.length}`; }
+    if (combustivel)  { vals.push(combustivel);   q += ` AND combustivel=$${vals.length}`; }
+    q += ' ORDER BY data_prevista DESC';
+    const { rows } = await db.query(q, vals);
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get('/relatorios/pagamentos', authMiddleware, requireRole('admin', 'gerente', 'pagador'), async (req, res) => {
-  const { de, ate, status_financeiro } = req.query;
-  let q = "SELECT * FROM cargas WHERE deleted_at IS NULL AND status NOT IN ('Planejamento','Cotação')";
-  const vals = [];
-  if (de)               { vals.push(de);               q += ` AND vencimento>=$${vals.length}`; }
-  if (ate)              { vals.push(ate);               q += ` AND vencimento<=$${vals.length}`; }
-  if (status_financeiro){ vals.push(status_financeiro); q += ` AND status_financeiro=$${vals.length}`; }
-  q += ' ORDER BY vencimento ASC';
-  const { rows } = await db.query(q, vals);
-  res.json(rows);
+  try {
+    const { de, ate, status_financeiro } = req.query;
+    let q = "SELECT * FROM cargas WHERE deleted_at IS NULL AND status NOT IN ('Planejamento','Cotação')";
+    const vals = [];
+    if (de)               { vals.push(de);               q += ` AND vencimento>=$${vals.length}`; }
+    if (ate)              { vals.push(ate);               q += ` AND vencimento<=$${vals.length}`; }
+    if (status_financeiro){ vals.push(status_financeiro); q += ` AND status_financeiro=$${vals.length}`; }
+    q += ' ORDER BY vencimento ASC';
+    const { rows } = await db.query(q, vals);
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get('/relatorios/saldo-antecipado', authMiddleware, requireRole('admin', 'gerente'), async (req, res) => {
-  const { rows } = await db.query('SELECT nome, saldo_antecipado FROM distribuidoras WHERE active=true ORDER BY nome');
-  res.json(rows);
+  try {
+    const { rows } = await db.query('SELECT nome, saldo_antecipado FROM distribuidoras WHERE active=true ORDER BY nome');
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ─── START ────────────────────────────────────────────────────────────────────

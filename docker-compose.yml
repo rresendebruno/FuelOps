@@ -28,6 +28,8 @@ services:
       dockerfile: Dockerfile
     env_file:
       - .env
+    environment:
+      DB_PASS: Peli@2025   
     depends_on:
       postgres:
         condition: service_healthy
@@ -40,7 +42,7 @@ services:
     environment:
       POSTGRES_DB: fuelops
       POSTGRES_USER: fuelops
-      POSTGRES_PASSWORD: fuelops_secret
+      POSTGRES_PASSWORD: Peli@2025
     volumes:
       - postgres_data:/var/lib/postgresql/data
     restart: always
